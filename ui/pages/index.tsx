@@ -1,4 +1,4 @@
-import {useEffect, useState} from 'react'
+import {useEffect, useReducer, useRef, useState} from 'react'
 import Head from 'next/head'
 import {useSelector, useDispatch} from 'react-redux'
 import * as Icons from 'heroicons-react'
@@ -7,11 +7,8 @@ import {w3cwebsocket as WebSocket} from 'websocket'
 
 const client = new WebSocket('ws://192.168.0.146:8765')
 
-const DEFAULT_SETTINGS = {
-    detents: 6
-}
-
 const DEFAULT_STATE = {
+    detents: 6,
     pos: 0
 }
 
@@ -34,50 +31,56 @@ function Circle({detents, pos}) {
     </div>
 }
 
+const stateReducer = (state=DEFAULT_STATE, action) => {
+    switch (action.type) {
+        case 'UPDATE':
+            return Object.assign({}, state, action.update)
+        default:
+            return state
+    }
+}
+
 export default function IndexPage() {
-    const [settings, setSettings] = useState(DEFAULT_SETTINGS)
-    const [state, setState] = useState(DEFAULT_STATE)
+    const [state, dispatchState] = useReducer(stateReducer, DEFAULT_STATE)
+    const state_ref = useRef(state)
     const [connected, setConnected] = useState(false)
 
-    const updateSettings = (update, send_update=false) => {
-        const new_settings = {...settings, ...update}
+    const updateState = (update, send_update=false) => {
+        const state = state_ref.current
+        const new_state = Object.assign({}, state, update)
         if (send_update) {
-            console.log("> SETTINGS", new_settings)
-            client.send(JSON.stringify(new_settings))
+            console.log("> STATE", new_state)
+            client.send(JSON.stringify({type: 'set_state', state: new_state}))
+        } else {
+            console.log("+ STATE", new_state)
+            state_ref.current = new_state
+            dispatchState({type: 'UPDATE', update: update})
         }
     }
 
-    const updateState = (update) =>
-        setState({...state, ...update})
-
     const changePos = (e) => {
         let pos = parseFloat(e.target.value)
-        pos = (settings.detents - pos) % settings.detents
-        updateSettings({pos}, true)
+        pos = (state.detents - pos) % state.detents
+        updateState({pos}, true)
     }
 
     const changeDetents = (e) => {
         const detents = parseFloat(e.target.value)
-        updateSettings({detents}, true)
+        updateState({detents}, true)
     }
 
     useEffect(() => {
         client.onopen = () => {
             setConnected(true)
-            console.log("> iSETTINGS", settings)
-            client.send(JSON.stringify(settings))
+            client.send(JSON.stringify({type: 'get_state'}))
         }
-        client.onmessage = (message_raw) => {
+        client.onmessage = (message_raw: any) => {
             try {
                 const message = JSON.parse(message_raw.data)
                 if (message.type == 'state') {
                     const new_state = message.state
                     console.log('< STATE', new_state)
                     updateState(new_state)
-                } else if (message.type == 'settings') {
-                    const new_settings = message.settings
-                    console.log('< SETTINGS', new_settings)
-                    setSettings(new_settings)
                 } else {
                     console.log("unknown message", message)
                 }
@@ -92,18 +95,18 @@ export default function IndexPage() {
         <Head>
             <title>Virtual detents</title>
         </Head>
-        <input type="number" value={settings.detents} onChange={changeDetents} className="hidden" />
+        <input type="number" value={state.detents} onChange={changeDetents} className="hidden" />
         <div className="flex flex-row gap-4">
             {[4, 8, 16, 32].map((n) => {
                 const setter_class = clsx(
                     "px-6 py-2 border border-gray-500 text-xl cursor-pointer",
-                    {"bg-blue-500 text-white": (n == settings.detents)}
+                    {"bg-blue-500 text-white": (n == state.detents)}
                 )
-                return <a className={setter_class} onClick={() => updateSettings({detents: n}, true)} key={n}>{n}</a>
+                return <a className={setter_class} onClick={() => updateState({detents: n}, true)} key={n}>{n}</a>
             })}
         </div>
         <div className="p-16 mx-auto">
-            <Circle detents={settings.detents} pos={state.pos} />
+            <Circle detents={state.detents} pos={state.pos} />
         </div>
     </div>
 }

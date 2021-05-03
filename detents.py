@@ -72,7 +72,7 @@ FALLOFF_START = 0.2
 FALLOFF_END = SNAP_START
 FALLOFF_SCALE = 16
 
-async def control_loop(settings_queue, state_queue):
+async def control_loop(msg_in_queue, state_out_queue):
     c = moteus.Controller()
 
     await init(c)
@@ -85,23 +85,25 @@ async def control_loop(settings_queue, state_queue):
 
     try:
         while True:
-            # Look for new settings
+            pos = round(detent_pos * detents) % detents
+            # Look for new state
             try:
-                new_settings = settings_queue.get_nowait()
-                print("[new_settings]", new_settings)
-                if 'detents' in new_settings:
-                    detents = new_settings['detents']
-                    nearest = round(detent_pos * detents) / detents
-                    detent_pos = nearest
-                    # await move_to(c, nearest)
-                    pos = round(detent_pos * detents) % detents
-                    print(f"pos = {pos}")
-                    await state_queue.put({'pos': pos})
-                if 'pos' in new_settings:
-                    pos = new_settings['pos']
-                    detent_pos = pos / detents
-                    await state_queue.put({'pos': pos})
-                    await move_to(c, detent_pos)
+                msg = msg_in_queue.get_nowait()
+                msg_type = msg.get('type', None)
+                if msg_type == 'set_state':
+                    new_state = msg['state']
+                    if 'detents' in new_state:
+                        detents = new_state['detents']
+                        nearest = round(detent_pos * detents) / detents
+                        detent_pos = nearest
+                        pos = round(detent_pos * detents) % detents
+                        print(f"n pos = {pos}")
+                        await state_out_queue.put({'pos': pos, 'detents': detents})
+                elif msg_type == 'get_state':
+                    print('state requested')
+                    await state_out_queue.put({'pos': pos, 'detents': detents})
+                else:
+                    print('unknown message', msg)
             except asyncio.QueueEmpty:
                 pass
 
@@ -118,8 +120,8 @@ async def control_loop(settings_queue, state_queue):
                     detent_pos -= detent_size
                 moved_frac = 1 - moved_frac
                 pos = round(detent_pos * detents) % detents
-                print(f"pos = {pos}")
-                await state_queue.put({'pos': pos})
+                print(f"r pos = {pos}")
+                await state_out_queue.put({'pos': pos})
 
             if moved_frac > FALLOFF_START:
                 # From 0.15 to 0.5 should map from 1 to 4
@@ -163,22 +165,22 @@ async def send_or_fail(c, message):
     except:
         print("or fail")
 
-def create_settings_handler(settings_queue, state_queue):
-    async def settings_handler(websocket, path):
-        print("++ Started settings socket")
+def create_state_handler(msg_in_queue):
+    async def state_handler(websocket, path):
+        print("++ Started state socket")
         connected.add(websocket)
 
-        async for settings_json in websocket:
-            settings = json.loads(settings_json)
-            print(f"R < {settings}")
-            await settings_queue.put(settings)
-            if connected:
-                re_settings_json = json.dumps({'type': 'settings', 'settings': settings})
-                await asyncio.wait([c.send(re_settings_json) for c in connected])
-            else:
-                print('resend: none connected')
+        async for state_json in websocket:
+            state = json.loads(state_json)
+            print(f"R < {state}")
+            await msg_in_queue.put(state)
+            # if connected:
+            #     re_state_json = json.dumps({'type': 'state', 'state': state})
+            #     await asyncio.wait([c.send(re_state_json) for c in connected])
+            # else:
+            #     print('resend: none connected')
 
-    return settings_handler
+    return state_handler
 
 async def send_or_disconnect(ws, message):
     try:
@@ -200,13 +202,13 @@ async def state_sender(state_queue):
 
 async def main():
     print('-'*60)
-    settings_queue = asyncio.Queue()
-    state_queue = asyncio.Queue()
+    msg_in_queue = asyncio.Queue()
+    state_out_queue = asyncio.Queue()
 
-    await websockets.serve(create_settings_handler(settings_queue, state_queue), "0.0.0.0", 8765)
+    await websockets.serve(create_state_handler(msg_in_queue), "0.0.0.0", 8765)
     await asyncio.wait([
-        control_loop(settings_queue, state_queue),
-        state_sender(state_queue),
+        control_loop(msg_in_queue, state_out_queue),
+        state_sender(state_out_queue),
     ])
 
 if __name__ == '__main__':
